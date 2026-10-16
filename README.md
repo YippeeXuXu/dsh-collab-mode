@@ -5,9 +5,9 @@
 <p align="center"><strong>让 Agent 协作可批准、可冻结、可复核。</strong></p>
 
 <p align="center">
-  <a href="https://github.com/a1270425803-bit/dsh-collab-mode/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
-  <a href="https://github.com/a1270425803-bit/dsh-collab-mode/releases"><img alt="Release" src="https://img.shields.io/github/v/release/a1270425803-bit/dsh-collab-mode?display_name=tag&sort=semver"></a>
-  <a href="https://github.com/a1270425803-bit/dsh-collab-mode"><img alt="DSH compatibility" src="https://img.shields.io/badge/DSH-v4.3%20compatible-111827.svg"></a>
+  <a href="https://github.com/YippeeXuXu/dsh-collab-mode/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
+  <a href="https://github.com/YippeeXuXu/dsh-collab-mode/releases"><img alt="Release" src="https://img.shields.io/github/v/release/YippeeXuXu/dsh-collab-mode?display_name=tag&sort=semver"></a>
+  <a href="https://github.com/YippeeXuXu/dsh-collab-mode"><img alt="DSH compatibility" src="https://img.shields.io/badge/DSH-v4.3%20compatible-111827.svg"></a>
 </p>
 
 <p align="center">
@@ -22,6 +22,8 @@
 ## 这是什么
 
 `dsh-collab-mode` 是 DSH（DeepSeek Harness）的 Agent preset：把容易失控的 AI 协作，收敛成一条可追踪的轻量状态机。它用双停点批准明确“做什么”和“怎么做”，用不可移动的候选引用冻结交付，再交给全新上下文的 Reviewer 独立审查；任何一步不满足条件，就停止或回到批准边界内返工，而不是凭对话惯性继续推进。
+
+本仓库于 2026-10-16 收录 R2.1 的角色路由调度和设置面板源码：路由器读取共享 `role-route.json`，直令绑定使用 `route_auth_context` 提供的最新用户事件 ID。面板从已注册的 route catalog 展示候选。仓库不包含个人角色选择、账号或密钥。magpie 接入和最新版 DSH 的兼容性尚未验证。`role-route.json` 损坏、缺失或找不到 `route_id` 时，调度插件仍会退回预设默认；这是当前实现的已知限制。
 
 ## 演进历程
 
@@ -78,7 +80,7 @@ CLI 时代这些纪律靠人工传递 prompt 执行；DSH 时代由 preset 自�
 1. **获取仓库**：
 
    ```sh
-   git clone https://github.com/a1270425803-bit/dsh-collab-mode.git
+   git clone https://github.com/YippeeXuXu/dsh-collab-mode.git
    cd dsh-collab-mode
    ```
 
@@ -103,7 +105,7 @@ CLI 时代这些纪律靠人工传递 prompt 执行；DSH 时代由 preset 自�
    sh scripts/bootstrap-catalog.sh
    ```
 
-5. **校验三处投影**：从已复制的 preset 根目录执行；命令只读检查 `spec.md`、`planner-kernel.md` 与 `agent.cordis.yml` 的 SHA 链和嵌入内容。
+5. **校验发布投影**：从已复制的 preset 根目录执行；命令检查独立 `governance/projection-hashes.json` 和 kernel 哨兵内嵌字节。仓库发布前另运行 `sh scripts/release-manifest.sh --verify`。
 
    ```sh
    cd "$DSH_HOME/.agent-presets/collab-v43-r2-1"
@@ -113,6 +115,18 @@ CLI 时代这些纪律靠人工传递 prompt 执行；DSH 时代由 preset 自�
 6. **在 DSH 中选择 preset**：选择 `协作模式 v4.3 r2.1`，然后按 DSH 的正常会话流程使用。
 
 > `DSH_HOME` 可以指向自定义目录；preset 中的 `catalogDir` 会通过 `node:path.resolve` 将它解析为绝对路径。若校验失败，请停止部署，确认复制的是同一版本的文件，并从 preset 根目录重新运行 `node scripts/release-sync.mjs --verify`；不要绕过校验继续选择 preset。
+
+### 安装角色路由面板
+
+面板源码位于 `host-plugins/dsh-role-route-panel/`，作为 DSH web profile 的独立包加载；preset 内的 `plugins/route-binding.mjs` 负责实际派发。两者都读取同一个 `$DSH_HOME/route-catalog/shared`。面板需要 Node.js 22 或更新版本，以及支持本包 `dsh.bundle` 和客户端模块的 DSH web profile。
+
+从仓库根目录运行：
+
+```sh
+pnpm --dir "$DSH_HOME/profiles/web" add "dsh-role-route-panel@link:$PWD/host-plugins/dsh-role-route-panel"
+```
+
+在 `$DSH_HOME/profiles/web/package.json` 的 `dsh.profile.bundles` 中加入裸包名 `"dsh-role-route-panel"`，再重启 DSH。面板从已注册的 route catalog 读取候选，并把选择写到用户目录中的 `role-route.json`；仓库不提供该配置文件。若自定义 catalog 路径，面板的 `DSH_ROLE_ROUTE_CATALOG_DIR` 与 preset 的 `catalogDir` 必须指向同一目录。仓库中的 `cordis.patch.yml` 随 bundle 加载，无需把它手写到 preset YAML。
 
 <a id="使用"></a>
 ## 使用
@@ -142,13 +156,14 @@ stateDiagram-v2
 <a id="原理"></a>
 ## 原理
 
-### 三处投影与一条 SHA 链
+### 三处投影与独立哈希
 
 - `governance/spec.md`：v4.3 的唯一规范真源。
 - `governance/planner-kernel.md`：从规范中抽取的常驻运行投影，保留状态、批准、路由、证据与完成规则。
-- `agent.cordis.yml`：把同一份 kernel 原文嵌入 persona 的哨兵区间，并在头部保存 `norm_sha256` 与 `runtime_projection_sha256`。
+- `agent.cordis.yml`：把同一份 kernel 原文嵌入 persona 的哨兵区间；旧摘要头已移除。
+- `governance/projection-hashes.json`：记录规范化 `spec.md` 与 `planner-kernel.md` 的 SHA-256。
 
-`scripts/release-sync.mjs` 会按 NFC、LF、去行尾空白和单一结尾换行规范化文本，再计算 UTF-8 SHA-256。默认模式负责同步；`--verify` 逐项比较规范哈希、kernel 哈希和 YAML 哨兵区间的逐字节内容，任一不一致都会以非零退出码停止。
+`scripts/release-sync.mjs` 会按 NFC、LF、去行尾空白和单一结尾换行规范化文本，再计算 UTF-8 SHA-256。默认模式更新独立 hash 文件并重建 YAML 哨兵；`--verify` 比较 hash 文件和 YAML 哨兵区间的逐字节内容，任一不一致都会以非零退出码停止。
 
 ```mermaid
 flowchart LR
@@ -157,9 +172,9 @@ flowchart LR
     Y["agent.cordis.yml<br/>persona 嵌入区间"]
     V["node scripts/release-sync.mjs --verify"]
     C["可重建候选"]
-    S -->|规范化并写入 norm_sha256| Y
+    S -->|规范化哈希| H[projection-hashes.json]
     S -->|抽取并校对规则| K
-    K -->|逐字节嵌入并写入 runtime_projection_sha256| Y
+    K -->|逐字节嵌入| Y
     Y --> V
     K --> V
     V -->|一致| C
@@ -205,6 +220,8 @@ A：不会。脚本会检查真实文件、权限、JSON 字段和 digest；校�
 ## What is this?
 
 `dsh-collab-mode` is the DSH (DeepSeek Harness) Agent preset for turning failure-prone AI collaboration into a traceable, lightweight state machine. Two approval gates clarify what to do and how to do it; immutable candidate references freeze the deliverable; a fresh Reviewer independently checks the same candidate. When a condition is not met, the process stops or returns for bounded rework instead of continuing on conversational momentum.
+
+On 2026-10-16, this repository added the R2.1 role router and settings panel source. The router reads the shared `role-route.json`; direct bindings use the latest user event ID returned by `route_auth_context`. The panel lists registered routes from the catalog. Personal role selections, accounts, and credentials are not included. Magpie integration and compatibility with the latest DSH release have not been verified. A damaged or missing `role-route.json`, or an unknown `route_id`, still falls back to the preset default; this is a known limitation.
 
 ## Evolution
 
@@ -261,7 +278,7 @@ In the CLI era, these disciplines were executed by relaying prompts by hand; in 
 1. **Clone the repository**:
 
    ```sh
-   git clone https://github.com/a1270425803-bit/dsh-collab-mode.git
+   git clone https://github.com/YippeeXuXu/dsh-collab-mode.git
    cd dsh-collab-mode
    ```
 
@@ -299,6 +316,18 @@ In the CLI era, these disciplines were executed by relaying prompts by hand; in 
 
 > `DSH_HOME` may point to a custom directory. `catalogDir` uses `node:path.resolve` to turn it into an absolute path. If verification fails, stop deployment, confirm that all files come from the same release, and rerun `node scripts/release-sync.mjs --verify` from the preset root; do not bypass verification.
 
+### Install the role router panel
+
+The panel source is in `host-plugins/dsh-role-route-panel/` and loads as a separate package in the DSH web profile. The preset's `plugins/route-binding.mjs` performs dispatch. Both use the same `$DSH_HOME/route-catalog/shared` directory. The panel requires Node.js 22 or newer and a DSH web profile that supports this package's `dsh.bundle` and client module.
+
+From the repository root, run:
+
+```sh
+pnpm --dir "$DSH_HOME/profiles/web" add "dsh-role-route-panel@link:$PWD/host-plugins/dsh-role-route-panel"
+```
+
+Add the bare package name `"dsh-role-route-panel"` to `dsh.profile.bundles` in `$DSH_HOME/profiles/web/package.json`, then restart DSH. The panel lists registered catalog routes and writes selections to `role-route.json` in the user directory; this configuration file is not included in the repository. For a custom catalog path, point `DSH_ROLE_ROUTE_CATALOG_DIR` and the preset's `catalogDir` at the same directory. The package's `cordis.patch.yml` loads with the bundle and does not need to be copied into the preset YAML.
+
 <a id="usage"></a>
 ## Usage
 
@@ -325,13 +354,14 @@ The Executor submits candidates and evidence only; it does not declare the final
 <a id="how-it-works"></a>
 ## How it works
 
-### Three projections, one SHA chain
+### Three projections and independent hashes
 
 - `governance/spec.md` is the sole v4.3 specification source.
 - `governance/planner-kernel.md` is the resident runtime projection containing the state, approval, routing, evidence, and completion rules.
-- `agent.cordis.yml` embeds the same kernel text inside the persona sentinel range and stores `norm_sha256` plus `runtime_projection_sha256` in its header.
+- `agent.cordis.yml` embeds the same kernel text inside the persona sentinel range; the old digest header has been removed.
+- `governance/projection-hashes.json` records normalized SHA-256 values for `spec.md` and `planner-kernel.md`.
 
-`scripts/release-sync.mjs` normalizes text as NFC, LF, no trailing whitespace, and exactly one final newline before computing UTF-8 SHA-256 values. Its default mode synchronizes; `--verify` compares the specification hash, kernel hash, and embedded YAML bytes and exits nonzero on any mismatch.
+`scripts/release-sync.mjs` normalizes text as NFC, LF, no trailing whitespace, and exactly one final newline before computing UTF-8 SHA-256 values. Its default mode updates the independent hash file and rebuilds the YAML sentinel; `--verify` compares the hash file and embedded YAML bytes and exits nonzero on any mismatch.
 
 ```mermaid
 flowchart LR
@@ -340,9 +370,9 @@ flowchart LR
     Y["agent.cordis.yml<br/>persona sentinel range"]
     V["node scripts/release-sync.mjs --verify"]
     C["reproducible candidate"]
-    S -->|normalized norm_sha256| Y
+    S -->|normalized hashes| H[projection-hashes.json]
     S -->|rules projected into| K
-    K -->|embedded runtime_projection_sha256| Y
+    K -->|embedded bytes| Y
     Y --> V
     K --> V
     V -->|consistent| C

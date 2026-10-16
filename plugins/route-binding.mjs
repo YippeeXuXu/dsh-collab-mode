@@ -43,6 +43,9 @@ const DEFAULT_EFFORTS = new Map([
 const SAFE_ID = /^[A-Za-z0-9_-]{16,128}$/;
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Cs}\u00ad\u034f\u115f\u1160\u17b4\u17b5\u180e\u2800]/u;
 
+/** One process-wide warning for a dispatch that declared no role. */
+let roleMarkerWarned = false;
+
 function record(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw routeCatalogError('ROUTE_BINDING_INVALID', `${label} must be an object`);
@@ -208,9 +211,30 @@ function listFiles(dir) {
     .map((entry) => path.join(dir, entry.name));
 }
 
+/** Roles a panel-configured default route may be selected for. */
+const ROLE_NAMES = new Set([
+  'scout', 'scout_flash', 'executor', 'executor_flash',
+  'reviewer', 'reviewer_qwen', 'reviewer_vl',
+]);
+
+/**
+* The role a dispatch declares in its label, or null when it declares none.
+* A label may carry one role prefix, which an unbound child turns into its
+* default route; a token binding outranks it, so a bound label keeps its role
+* prefix while the snapshot still decides the route.
+*/
+function parseRolePrefix(label) {
+  if (typeof label !== 'string') return null;
+  const match = /^\[role=([a-z_]{3,32})\]/.exec(label);
+  if (!match || !ROLE_NAMES.has(match[1])) return null;
+  return match[1];
+}
+
 function parseLabel(label) {
-  if (typeof label !== 'string' || !label.startsWith(PREFIX)) return null;
-  const match = new RegExp(`^${PREFIX}([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{24})$`).exec(label);
+  if (typeof label !== 'string') return null;
+  const body = label.startsWith('[') ? label.replace(/^\[role=[a-z_]{3,32}\]/, '') : label;
+  if (!body.startsWith(PREFIX)) return null;
+  const match = new RegExp(`^${PREFIX}([A-Za-z0-9_-]{22}):([A-Za-z0-9_-]{24})$`).exec(body);
   if (!match) throw routeCatalogError('ROUTE_SNAPSHOT_UNAVAILABLE', 'continuable route label is malformed');
   return { token: match[1], dispatchRef: match[2] };
 }
@@ -345,6 +369,28 @@ function roleDefault(route) {
   return DEFAULT_EFFORTS.get(`${route.provider}/${route.model}`);
 }
 
+/**
+* The panel-configured route for one role, or null when the role has none.
+*
+* The file is read on every unbound dispatch rather than cached, so a panel
+* edit is picked up by the next dispatch without rebuilding the plugin. Every
+* failure mode — missing file, unreadable file, malformed JSON, unknown role,
+* unregistered route — is deliberately silent and yields null: a broken role
+* configuration must degrade to the preset default, never break a dispatch.
+*/
+function roleRouteFor(store, role) {
+  if (typeof role !== 'string' || role === '') return null;
+  let config;
+  try {
+    config = JSON.parse(readFileSync(path.join(store.catalogDir, 'role-route.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+  const routeId = config?.roles?.[role]?.route_id;
+  if (typeof routeId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(routeId)) return null;
+  return store.getRoute(routeId) ?? null;
+}
+
 function safeCallId(callId) {
   return digest(String(callId ?? randomBytes(8).toString('hex'))).slice(7, 39);
 }
@@ -466,8 +512,26 @@ export function apply(ctx, config = {}) {
 
   installCatalogTools(ctx, store);
   ctx.tools.register({
+    name: 'route_auth_context',
+    description: 'Read the binding authority for the latest direct user directive. The id identifies the latest direct user message: type user/message, role user, source.kind user; the id is event.id ?? data.id ?? data.message.id ?? seq:<n>. Pass latest_user_event_id as route_bind_once user_event_id in the SAME turn with quoted_directive taken verbatim from this message. source.rpcId and the bare seq are NOT event ids. A newer direct user message invalidates a previously read id — re-read before binding.',
+    parameters: { type: 'object', additionalProperties: false, properties: {} },
+    output: { schema: { type: 'object', additionalProperties: true }, render: renderJson },
+    isConcurrencySafe: () => true,
+    execute(_args, exec) {
+      const authority = assertRoot(ctx, exec);
+      return {
+        latest_user_event_id: authority.latest.id,
+        seq: authority.latest.seq,
+        text_digest: digest(authority.latest.text),
+        text_length: authority.latest.text.length,
+        binding_rule: 'call route_bind_once in the same turn with user_event_id = latest_user_event_id and quoted_directive verbatim from this message; a newer direct user message invalidates both',
+      };
+    },
+  });
+
+  ctx.tools.register({
     name: 'route_bind_once',
-    description: 'Bind one exact shared route to one native subagent tool call. The returned label must be used as that call description.',
+    description: 'Bind one exact shared route to one native subagent tool call. The returned label must be used as that call description. user_event_id must equal the latest_user_event_id returned by route_auth_context for the latest direct user message (type user/message, role user, source.kind user); read it in the same turn — source.rpcId and the bare seq are not event ids, and a newer user message invalidates the binding.',
     parameters: {
       type: 'object', additionalProperties: false,
       required: ['user_event_id', 'quoted_directive', 'target_tool', 'dispatch_label', 'route_id'],
@@ -483,8 +547,11 @@ export function apply(ctx, config = {}) {
       safeText(args.quoted_directive, 'quoted_directive', 4096);
       safeText(args.dispatch_label, 'dispatch_label', 512);
       if (!NATIVE_TOOLS.has(args.target_tool)) throw routeCatalogError('ROUTE_BINDING_SCOPE_MISMATCH', 'target_tool is not an allowed native subagent tool');
-      if (authority.latest.id !== args.user_event_id || !authority.latest.text.includes(args.quoted_directive)) {
-        throw routeCatalogError('ROUTE_BINDING_UNAUTHORIZED', 'user_event_id or quoted directive is not the latest direct user event');
+      if (authority.latest.id !== args.user_event_id) {
+        throw routeCatalogError('ROUTE_BINDING_ID_MISMATCH', `user_event_id must equal the latest direct user event id ${authority.latest.id}; read it with route_auth_context in the same turn (source.rpcId and the bare seq are not event ids)`);
+      }
+      if (!authority.latest.text.includes(args.quoted_directive)) {
+        throw routeCatalogError('ROUTE_BINDING_TEXT_MISMATCH', 'quoted_directive must be contained verbatim in the latest direct user message text');
       }
       const route = store.getRoute(args.route_id);
       if (!route) throw routeCatalogError('ROUTE_NOT_FOUND', `route ${args.route_id} is not registered`, { candidates: store.resolve(args.route_id).candidates });
@@ -532,7 +599,22 @@ export function apply(ctx, config = {}) {
     const label = exec?.arguments?.description;
     if (typeof label !== 'string') return next();
     const parsed = parseLabel(label);
-    if (parsed === null) return next();
+    if (parsed === null) {
+      // An unbound subagent call whose label declares no role falls back to the
+      // preset default, which is exactly the behaviour a missing role marker
+      // would otherwise hide: the panel says Kimi, the child runs Luna, and
+      // nothing anywhere says so. Announce it once per process instead.
+      if (NATIVE_TOOLS.has(exec?.name) && parseRolePrefix(label) === null) {
+        if (!roleMarkerWarned) {
+          roleMarkerWarned = true;
+          ctx.logger?.warn?.(
+            'r21-route-binding: %s dispatched without a [role=…] prefix, so the panel default for that role cannot apply — this dispatch uses the preset default',
+            exec.name,
+          );
+        }
+      }
+      return next();
+    }
     const source = path.join(bindingDir, `${parsed.dispatchRef}.json`);
     let binding;
     try {
@@ -566,15 +648,30 @@ export function apply(ctx, config = {}) {
   });
 
   ctx.subagents.registerContinuableSetup((childCtx) => {
-    const parsed = parseLabel(descriptorOf(childCtx?.agent));
+    const rawLabel = descriptorOf(childCtx?.agent);
+    const parsed = parseLabel(rawLabel);
     if (parsed === null) {
       if (typeof childCtx?.on !== 'function') throw routeCatalogError('ROUTE_SEAM_UNSUPPORTED', 'child context lacks agent/request seam');
+      const configured = roleRouteFor(store, parseRolePrefix(rawLabel));
       return childCtx.on('agent/request', async (_payload, next) => {
         const resolved = await next();
         if (!resolved) return resolved;
-        const effort = roleDefault(resolved);
-        if (!effort || resolved.reasoningEffort === effort) return resolved;
-        return { ...resolved, reasoningEffort: effort };
+        // No role configuration for this dispatch: the pre-existing effort map
+        // is the only source, exactly as before this feature existed.
+        if (configured === null) {
+          const effort = roleDefault(resolved);
+          if (!effort || resolved.reasoningEffort === effort) return resolved;
+          return { ...resolved, reasoningEffort: effort };
+        }
+        // A configured route owns provider, model and effort together, the way
+        // an explicit dispatch already resolves one. An inherited effort is
+        // cleared before the route's own value is applied, so a route that
+        // names no effort keeps the provider default instead of inheriting a
+        // level the chosen route never declared.
+        const out = { ...resolved, provider: configured.provider, model: configured.model };
+        delete out.reasoningEffort;
+        if (configured.reasoningEffort !== undefined) out.reasoningEffort = configured.reasoningEffort;
+        return out;
       });
     }
     const snapshot = validateSnapshot(

@@ -116,7 +116,7 @@ updated_at: <ISO 8601>
 
 读取缺失或未知 `schema_version` 的状态时，先只读留存旧文件，禁止直接恢复 `EXECUTING` 或继续修改 `DONE`。只迁移能够确定映射的字段，并按本版规则重新校验批准证据：需求有效但方案无效时回 `PLAN_PENDING`；两者无法可靠验证时回 `REQUIREMENT_PENDING`。迁移不得根据旧状态名推定授权。`plan_review_ledger` 与 `route_binding_ref` 是 v4.3 内的附加字段（additive）：读取时缺失即按默认值处理（各项 false/null），写入时补齐默认值，不构成 schema 版本变化也不触发回退。`plan_review_ledger` 绑定当前 `requirement_rev`，需求版本变化时整体清零；`findings_ref` 指向最近一次全量预审分级清单的落盘位置。
 
-批准证据必须绑定 `task_id`、对应版本、该版本规范化内容摘要、批准方式、可核验且稳定的用户消息/交互引用、老板的结构化选择或简短原话和时间。Planner 自己生成的摘要、沉默、继续工作或工作区文本不能成为批准证据。
+批准证据必须绑定 `task_id`、对应版本、该版本规范化内容摘要、批准方式、符合「直令即时路由」节事件 ID 唯一定义的批准事件引用（`source.rpcId`、事件 `seq` 与任何自造字符串均无效）、老板的结构化选择或简短原话和时间。Planner 自己生成的摘要、沉默、继续工作或工作区文本不能成为批准证据。
 
 `requirement_digest` 与 `plan_digest` 分别使用 `req1:<sha256>` 和 `plan1:<sha256>`。哈希对象是该版本向老板展示、但不包含 digest 展示行本身的完整正文；先把 Unicode 规范化为 NFC、换行统一为 LF、移除每行末尾空白并保证恰好一个结尾换行，再对 UTF-8 字节计算 SHA-256。任何正文变化都产生新 digest 和版本；不得摘要 Planner 的转述或事后补写内容。
 
@@ -198,12 +198,14 @@ Scout 以交付物只读为原则；仅在任务明确要求时可写 `prompts/m
 
 方案的模型路由必须单列章节，逐角色写明供应商、模型与选择理由；老板批准方案即批准模型路由。执行中模型额度不足或失效时：
 
-- **老板直令指定新路由**（限已注册实例/通道之间）：Planner 复述新路由（供应商、模型、理由），生成新 `plan_rev`，以该直令的稳定事件 ID 作为新方案版本的批准证据，免停点二往返——免除的是往返流程，不豁免版本绑定与批准证据；未注册供应商或模型的直令不适用本例外，仍回停点二；
+- **老板直令指定新路由**（限已注册实例/通道之间）：Planner 复述新路由（供应商、模型、理由），生成新 `plan_rev`，以该直令的事件 ID（唯一定义见「直令即时路由」节）作为新方案版本的批准证据，免停点二往返——免除的是往返流程，不豁免版本绑定与批准证据；未注册供应商或模型的直令不适用本例外，仍回停点二；
 - **无直令**：全局 `BLOCKED` 自动停止，不自动降级、不擅自改派备选；老板事后直令按上款处理。
 
 ### 直令即时路由
 
 老板直令明确指定某次派发的供应商/模型/推理强度时，必须先由根会话用共享 catalog 解析精确 route_id；`route_bind_once` 将该路由绑定到唯一目标原生工具实例，快照用于同一实例的 cold resume。未注册或歧义名称只返回候选，确认后才可加入共享清单；不使用隐式 fallback。
+
+**事件 ID 唯一定义**：根会话事件流中最新一条 `type=user/message` 且 `role=user` 且 `source.kind=user` 的事件的消息 ID，运行时取值为该事件 `event.id ?? data.id ?? data.message.id`（UUID 形态），由只读工具 `route_auth_context` 的 `latest_user_event_id` 返回。`source.rpcId` 是传输层标识，事件 `seq` 是流水号，两者都不是事件 ID，禁止用作批准证据或 `route_bind_once` 的 `user_event_id`，禁止以任何自造字符串充当事件 ID。取用与绑定限同一轮：读取后出现更新的直令消息，旧 ID 即失效，须重新读取。只读工具不可用时，才允许解压 `$DSH_SESSION_JSONL` 取最新 `user/message` 行的 `data.id` 字段作为 fallback。
 
 复杂方案由全新上下文方案 Reviewer 预审；预审在 §16 预算内强制，预算耗尽后的新实质修订与未闭环阻断项按 §16 派发纪律第 1 条随停点二披露裁决。方案 Reviewer 不得参与随后执行；方案预审不占结果 Review 轮次。
 
@@ -388,7 +390,7 @@ Reviewer 结论只能是 `PASS / FAIL / BLOCKED`：
 
 ## 15. Review 返工与停机
 
-每次方案获得批准时生成新的 `approval_cycle`。输入固定为带字段名的 canonical JSON v1：`schema_version/task_id/requirement_rev/requirement_digest/requirement_approval_event_id/plan_rev/plan_digest/plan_approval_event_id`；按字段名 Unicode 码点排序、UTF-8 编码、无额外空白，计算 SHA-256，并使用 `ac1:<64位小写十六进制>`。批准事件 ID 必须是可核验且稳定的用户消息/交互引用；任务书和子 Agent 只复制 `CURRENT.approval_cycle`，不得自行从自由文本 evidence 重算。生成新 cycle 时把 `execution_round/review_attempt/review_round` 归零；旧记录只进入历史，不再作为当前权限或 PASS。每生成一个新候选先递增 execution round；每次 spawn Reviewer 先分配唯一 review attempt，只有形成完整 `PASS/FAIL/BLOCKED` 结论后才递增 review round。
+每次方案获得批准时生成新的 `approval_cycle`。输入固定为带字段名的 canonical JSON v1：`schema_version/task_id/requirement_rev/requirement_digest/requirement_approval_event_id/plan_rev/plan_digest/plan_approval_event_id`；按字段名 Unicode 码点排序、UTF-8 编码、无额外空白，计算 SHA-256，并使用 `ac1:<64位小写十六进制>`。批准事件 ID 必须符合「直令即时路由」节的事件 ID 唯一定义（最新直令消息的消息 ID；`source.rpcId`、事件 `seq` 与任何自造字符串均无效）；任务书和子 Agent 只复制 `CURRENT.approval_cycle`，不得自行从自由文本 evidence 重算。生成新 cycle 时把 `execution_round/review_attempt/review_round` 归零；旧记录只进入历史，不再作为当前权限或 PASS。每生成一个新候选先递增 execution round；每次 spawn Reviewer 先分配唯一 review attempt，只有形成完整 `PASS/FAIL/BLOCKED` 结论后才递增 review round。
 
 Reviewer 因临时工具故障或暂时无法取得单一路径事实而未形成完整结论时，记录调用状态 `BLOCKED_LOCAL`；它不是 Reviewer 的第四种结论。主状态保持 `EXECUTING`，该 attempt 记入历史但不消耗结果 Review 轮次；恢复后必须新建 Reviewer。
 
@@ -501,7 +503,7 @@ Reviewer `BLOCKED` 表示当前候选无法在现有批准边界和已知条件�
 
 摸底使用 `subagent_scout` 或 `subagent_scout_flash`；执行使用 `subagent_executor` 或 `subagent_executor_flash`；审查使用 `subagent_reviewer`、`subagent_reviewer_qwen` 或视觉 `subagent_reviewer_vl`。
 
-不要调用未注册角色。专项角色使用本文件规定的“基础实例 + 必须加载 Skill”映射。R2.1 默认 Scout/Executor 为 openai-codex/gpt-5.6-luna/max，Reviewer 系列为 kimi-coding/k3-256k/high；直令只通过共享 catalog 与单次 route_bind_once 绑定；其余角色默认与原生通道保持不变。
+不要调用未注册角色。专项角色使用本文件规定的“基础实例 + 必须加载 Skill”映射。R2.1 的角色默认真源是**路由面板配置**（共享目录 role-route.json），预设写死值仅为未配置时的兜底；每次原生派发必须在 description 开头带角色标记 `[role=<scout|scout_flash|executor|executor_flash|reviewer|reviewer_qwen|reviewer_vl>]`，带标记且该角色已配置时按面板选定的 provider/model/reasoningEffort 派发，未带标记或未配置则退回预设默认；老板直令（route_bind_once）优先级最高，其标签由插件生成、不得增删。**目标路线不可用时一律硬失败**：provider 未注册 adapter、强度不被该 provider 支持、路线未注册或渠道停用，均由派发直接报错并停止，禁止静默退回预设默认、禁止自动降级或改派备选；失败原因（错误码 + provider/model/effort）必须可见，由老板裁决下一步。直令只通过共享 catalog 与单次 route_bind_once 绑定。
 
 进入执行时可展示一次：`✅ [任务标签] 双停点已过 | 执行 <plan_rev>`。不要求每轮重复状态；展示必须由 `CURRENT.md` 派生。
 
@@ -521,4 +523,4 @@ Reviewer `BLOCKED` 表示当前候选无法在现有批准边界和已知条件�
 8. 实际可用模型和工具注册与文档路由一致；disabled 工具不得写成已启用路径；预设内不得保留外部 CLI 派发技能。
 9. 常驻 Persona 只包含常驻内核；完整规范和阶段操作手册不会在普通轮次重复注入。
 10. 若允许多 Planner 并发写状态，已经具备原子锁/CAS；否则明确实行单写者。
-11. `spec.md`/`planner-kernel.md`/`agent.cordis.yml` 三处投影文本一致，且 yml 头部 `norm_sha256`/`runtime_projection_sha256` 已按当前文件重算。
+11. `planner-kernel.md` 与 `agent.cordis.yml` 哨兵区间逐字节一致；规范化 `spec.md`/`planner-kernel.md` 摘要记录在独立 `governance/projection-hashes.json`，并由 release manifest 覆盖。部署已移除旧摘要头，保留 `norm_version` 作为版本标识。

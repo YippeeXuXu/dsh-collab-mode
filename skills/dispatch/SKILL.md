@@ -24,7 +24,7 @@ description: 在有效 EXECUTING 中验证任务书、派发全新 Executor、�
 
 使用任务书指定的全新 `subagent_executor` 或 `subagent_executor_flash`,只传任务书与必要源路径。专项任务要求 Executor 加载指定 `role-*` Skill 并报告实际加载结果。
 
-派发渠道（只限原生）：所有派发只使用 DSH 原生注册通道，不加载外部 CLI。R2.1 默认 Scout/Executor 使用 openai-codex/gpt-5.6-luna/max，Reviewer 系列使用 kimi-coding/k3-256k/high；直令通过共享 catalog 的精确 route_id 与 `route_bind_once` 绑定单次目标工具；未注册路线先候选确认。
+派发渠道（只限原生）：所有派发只使用 DSH 原生注册通道，不加载外部 CLI。每次 description 以 `[role=<scout|scout_flash|executor|executor_flash|reviewer|reviewer_qwen|reviewer_vl>]` 开头。已配置角色按共享 `role-route.json` 中的已注册路线派发；老板直令由 `route_auth_context` 取得事件 ID，再用 `route_bind_once` 单次绑定且优先于角色默认。未配置、损坏或未注册路线当前回退预设默认，核对实际派发路由。
 
 4. **并发纪律**：同一 provider 并发后台 agent ≤3；每次直令使用唯一 dispatch_ref/token，异构路由互不串线；无 token 使用角色默认。派发后静默等待完成通知，其他原生与治理纪律保持不变。
 

@@ -10,6 +10,7 @@ const ROOT_DIR = path.resolve(SCRIPT_DIR, '..');
 const SPEC_FILE = path.join(ROOT_DIR, 'governance', 'spec.md');
 const KERNEL_FILE = path.join(ROOT_DIR, 'governance', 'planner-kernel.md');
 const AGENT_FILE = path.join(ROOT_DIR, 'agent.cordis.yml');
+const HASH_FILE = path.join(ROOT_DIR, 'governance', 'projection-hashes.json');
 
 const BEGIN_MARKER = '# ===== PLANNER-KERNEL BEGIN =====';
 const END_MARKER = '# ===== PLANNER-KERNEL END =====';
@@ -17,7 +18,6 @@ const KERNEL_TITLE = '# DSH 协作模式 Planner Persona v4.3（常驻运行投�
 function fail(message) {
   throw new Error(message);
 }
-
 function readUtf8(file) {
   const bytes = readFileSync(file);
   const text = bytes.toString('utf8');
@@ -211,22 +211,15 @@ function synchronizeKernel(yml, kernelText) {
   return `${yml.slice(0, kernelStart)}${replacement}${yml.slice(persona.scalarEnd)}`;
 }
 
-function updateHash(yml, key, value) {
-  let count = 0;
-  const expression = new RegExp(`^([ \\t]*${escapeRegExp(key)}:)[ \\t]*[0-9a-f]{64}([ \\t]*)(\\r?)$`, 'gmu');
-  const updated = yml.replace(expression, (_whole, prefix, suffix, carriageReturn) => {
-    count += 1;
-    return `${prefix} ${value}${suffix}${carriageReturn}`;
-  });
-  if (count !== 1) fail(`expected exactly one ${key} field in agent.cordis.yml (found ${count})`);
-  return updated;
-}
-
-function readHash(yml, key) {
-  const expression = new RegExp(`^[ \\t]*${escapeRegExp(key)}:[ \\t]*([0-9a-f]{64})[ \\t]*\\r?$`, 'gmu');
-  const matches = [...yml.matchAll(expression)];
-  if (matches.length !== 1) fail(`expected exactly one ${key} field in agent.cordis.yml (found ${matches.length})`);
-  return matches[0][1];
+function readHashes() {
+  let value;
+  try { value = JSON.parse(readFileSync(HASH_FILE, 'utf8')); } catch (error) { fail(`cannot read ${path.relative(ROOT_DIR, HASH_FILE)}: ${error.message}`); }
+  if (!value || value.hash_scheme !== 'normalized-text-sha256-v1'
+    || !/^[0-9a-f]{64}$/u.test(value.spec_sha256 ?? '')
+    || !/^[0-9a-f]{64}$/u.test(value.kernel_sha256 ?? '')) {
+    fail('projection-hashes.json has invalid schema');
+  }
+  return value;
 }
 
 function firstByteDifference(left, right) {
@@ -246,7 +239,8 @@ function firstByteDifference(left, right) {
 
 function atomicWrite(file, content) {
   const temporary = `${file}.tmp-${process.pid}`;
-  const mode = statSync(file).mode & 0o777;
+  let mode = 0o644;
+  try { mode = statSync(file).mode & 0o777; } catch (error) { if (error?.code !== 'ENOENT') throw error; }
   try {
     writeFileSync(temporary, content, 'utf8');
     chmodSync(temporary, mode);
@@ -271,18 +265,17 @@ function loadInputs() {
 function verifyProjection({ spec, kernel, agent }) {
   const specHash = sha256(normalizeText(spec.text));
   const kernelHash = sha256(normalizeText(kernel.text));
-  const declaredSpecHash = readHash(agent.text, 'norm_sha256');
-  const declaredKernelHash = readHash(agent.text, 'runtime_projection_sha256');
+  const declared = readHashes();
   const persona = locatePersona(agent.text);
   const block = markerBlock(agent.text, persona);
   if (!block) fail('agent.cordis.yml is missing planner-kernel BEGIN/END markers');
 
   const failures = [];
-  if (specHash !== declaredSpecHash) {
-    failures.push(`norm_sha256 mismatch: spec=${specHash} yml=${declaredSpecHash}`);
+  if (specHash !== declared.spec_sha256) {
+    failures.push(`spec_sha256 mismatch: spec=${specHash} declared=${declared.spec_sha256}`);
   }
-  if (kernelHash !== declaredKernelHash) {
-    failures.push(`runtime_projection_sha256 mismatch: kernel=${kernelHash} yml=${declaredKernelHash}`);
+  if (kernelHash !== declared.kernel_sha256) {
+    failures.push(`kernel_sha256 mismatch: kernel=${kernelHash} declared=${declared.kernel_sha256}`);
   }
   if (block.embedded !== kernel.text) {
     failures.push(`embedded planner-kernel mismatch: ${firstByteDifference(block.embedded, kernel.text)}`);
@@ -292,8 +285,8 @@ function verifyProjection({ spec, kernel, agent }) {
     fail(`release-sync verification failed (${failures.length} issue${failures.length === 1 ? '' : 's'})`);
   }
 
-  console.log(`[OK] norm_sha256 spec = ${specHash}`);
-  console.log(`[OK] runtime_projection_sha256 kernel = ${kernelHash}`);
+  console.log(`[OK] spec_sha256 = ${specHash}`);
+  console.log(`[OK] kernel_sha256 = ${kernelHash}`);
   console.log(`[OK] embedded planner-kernel matches governance/planner-kernel.md (${Buffer.byteLength(kernel.text, 'utf8')} bytes)`);
   console.log('release-sync verify: OK');
 }
@@ -302,13 +295,15 @@ function synchronize() {
   const inputs = loadInputs();
   const specHash = sha256(normalizeText(inputs.spec.text));
   const kernelHash = sha256(normalizeText(inputs.kernel.text));
-  let updated = synchronizeKernel(inputs.agent.text, inputs.kernel.text);
-  updated = updateHash(updated, 'norm_sha256', specHash);
-  updated = updateHash(updated, 'runtime_projection_sha256', kernelHash);
+  const hashes = { hash_scheme: 'normalized-text-sha256-v1', spec_sha256: specHash, kernel_sha256: kernelHash };
+  let updated = inputs.agent.text.replace(/^      (?:norm_sha256|runtime_projection_sha256|hash_scheme):.*(?:\r?\n|$)/gmu, '');
+  updated = synchronizeKernel(updated, inputs.kernel.text);
   if (updated !== inputs.agent.text) atomicWrite(AGENT_FILE, updated);
+  atomicWrite(HASH_FILE, `${JSON.stringify(hashes, null, 2)}\n`);
   console.log(`release-sync: synchronized ${path.relative(ROOT_DIR, AGENT_FILE)}`);
-  console.log(`[OK] norm_sha256 = ${specHash}`);
-  console.log(`[OK] runtime_projection_sha256 = ${kernelHash}`);
+  console.log(`release-sync: updated ${path.relative(ROOT_DIR, HASH_FILE)}`);
+  console.log(`[OK] spec_sha256 = ${specHash}`);
+  console.log(`[OK] kernel_sha256 = ${kernelHash}`);
 }
 
 function main() {

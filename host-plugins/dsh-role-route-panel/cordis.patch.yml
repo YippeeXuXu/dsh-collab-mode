@@ -1,0 +1,18 @@
+# 角色默认路由面板的 bundle patch。
+#
+# 由 profile 的 `dsh.profile.bundles` 引用本包时自动生效，不需要手写 YAML。
+#
+# 条目名必须是**裸包名**：客户端模块扫描器把它当包名去解析 `<name>/package.json`，
+# 写成子路径（如 dsh-role-route-panel/plugin）会解析失败、被缓存为“非客户端包”，
+# 面板则静默不出现。宿主半与浏览器半因此共用同一个名字。
+#
+# 不需要 config：插件会自己定位共享 route catalog 目录（依次尝试 config.catalogDir、
+# DSH_ROLE_ROUTE_CATALOG_DIR、$DSH_HOME/route-catalog/shared），并且只有真正能读出
+# catalog 的那个候选才算数。若要显式指定，取消下面注释即可——注意它必须与
+# r21-route-binding 的 catalogDir 指向同一目录，否则面板写下的配置运行时看不见，
+# 而且不会报错。
+- insert:
+    - id: role-route-panel
+      name: dsh-role-route-panel
+      # config:
+      #   catalogDir: /absolute/path/to/route-catalog/shared
