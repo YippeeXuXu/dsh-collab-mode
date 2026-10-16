@@ -115,7 +115,7 @@ test('回环判断只认精确地址，以 127. 开头的域名一律拒绝', ()
   assert.equal(hostNameOf('127.attacker.tld'), '127.attacker.tld');
 });
 
-test('只接受回环来源，非 GET/PUT/POST 一律拒绝', () => {
+test('只接受回环来源，写入仅允许同源或无 Origin 的 PUT JSON', () => {
   const local = { method: 'GET', socket: { remoteAddress: '127.0.0.1' }, headers: { host: '127.0.0.1:3080' } };
   assert.equal(screenRequest(local), undefined);
   assert.equal(screenRequest({ ...local, socket: { remoteAddress: '10.0.0.9' } }).status, 403);
@@ -123,5 +123,11 @@ test('只接受回环来源，非 GET/PUT/POST 一律拒绝', () => {
   assert.equal(screenRequest({ ...local, headers: { host: '127.attacker.tld' } }).status, 403);
   assert.equal(screenRequest({ ...local, headers: { host: '127.0.0.1.nip.io:3080' } }).status, 403);
   assert.equal(screenRequest({ ...local, headers: { host: 'localhost:3080' } }), undefined);
+  assert.equal(screenRequest({ ...local, method: 'POST', headers: { ...local.headers, origin: 'https://attacker.example', 'content-type': 'text/plain' } }).status, 403);
+  assert.equal(screenRequest({ ...local, method: 'PUT', headers: { ...local.headers, origin: 'https://attacker.example', 'content-type': 'application/json' } }).status, 403);
+  assert.equal(screenRequest({ ...local, method: 'PUT', headers: { ...local.headers, origin: 'http://127.0.0.1:3080', 'content-type': 'application/json' } }), undefined);
+  assert.equal(screenRequest({ ...local, method: 'PUT', headers: { ...local.headers, 'content-type': 'application/json' } }), undefined);
+  assert.equal(screenRequest({ ...local, method: 'PUT', headers: { ...local.headers, origin: 'http://127.0.0.1:3081', 'content-type': 'application/json' } }).status, 403);
+  assert.equal(screenRequest({ ...local, method: 'PUT', headers: { ...local.headers, 'content-type': 'text/plain' } }).status, 415);
   assert.equal(screenRequest({ ...local, method: 'DELETE' }).status, 405);
 });

@@ -240,14 +240,60 @@ export function hostNameOf(header) {
   return colon === -1 ? header : header.slice(0, colon);
 }
 
-/** 只服务本机面板；同机之外的来源一律 403。 */
+function hostParts(header) {
+  if (typeof header !== 'string' || header === '') return null;
+  if (header.startsWith('[')) {
+    const end = header.indexOf(']');
+    if (end === -1) return null;
+    const rest = header.slice(end + 1);
+    if (rest !== '' && !/^:\d+$/.test(rest)) return null;
+    return { hostname: header.slice(1, end), port: rest === '' ? '' : rest.slice(1) };
+  }
+  const firstColon = header.indexOf(':');
+  const lastColon = header.lastIndexOf(':');
+  if (firstColon !== lastColon) return null;
+  return firstColon === -1
+    ? { hostname: header, port: '' }
+    : (/^:\d+$/.test(header.slice(firstColon))
+      ? { hostname: header.slice(0, firstColon), port: header.slice(firstColon + 1) }
+      : null);
+}
+
+function sameOriginAsHost(origin, hostHeader) {
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  const host = hostParts(hostHeader);
+  if (host === null) return false;
+  const originHostname = parsed.hostname.startsWith('[') && parsed.hostname.endsWith(']')
+    ? parsed.hostname.slice(1, -1)
+    : parsed.hostname;
+  if (originHostname.toLowerCase() !== host.hostname.toLowerCase()) return false;
+  const defaultPort = parsed.protocol === 'https:' ? '443' : '80';
+  return (parsed.port || defaultPort) === (host.port || defaultPort);
+}
+
+/** 只服务本机面板；写请求必须是面板使用的 PUT JSON，跨站来源一律 403。 */
 export function screenRequest(req) {
   if (!isLoopbackAddress(req?.socket?.remoteAddress) || !isLoopbackAddress(hostNameOf(req?.headers?.host))) {
     return { status: 403, body: { ok: false, error: 'forbidden' } };
   }
+  const origin = req?.headers?.origin;
+  if (origin !== undefined && !sameOriginAsHost(origin, req?.headers?.host)) {
+    return { status: 403, body: { ok: false, error: 'forbidden' } };
+  }
   const method = req?.method;
-  if (method !== 'GET' && method !== 'PUT' && method !== 'POST') {
+  if (method === 'GET') return undefined;
+  if (method !== 'PUT') {
     return { status: 405, body: { ok: false, error: 'method-not-allowed' } };
+  }
+  const contentType = req?.headers?.['content-type'];
+  if (typeof contentType !== 'string' || contentType.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+    return { status: 415, body: { ok: false, error: 'unsupported-media-type' } };
   }
   return undefined;
 }

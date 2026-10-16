@@ -20,7 +20,7 @@ aab20e0cc13cbc88932a61ea6ba79ed693c7a8650a3720fbccb577cf32b07fe1  ./governance/r
 8ec6548062ed169907ec0fb178664ef25a784d92c666c5c0d1a38713d0d8162a  ./host-plugins/dsh-role-route-panel/cordis.patch.yml
 dddd3cc4c71b366a5b84b65b56a309d055092e22c408cf639221ce881522db75  ./host-plugins/dsh-role-route-panel/package.json
 a0a71c7410d16557ace321e9a816836a1719ad9e5da944678fdcd8895bfbf513  ./host-plugins/dsh-role-route-panel/src/client.js
-ec56dded4efda933793edad0dde4845135e1cbb7bddf9ba40b59355c4a5d3281  ./host-plugins/dsh-role-route-panel/src/plugin.js
+dd7e8cbe6f904c61612841aac4637e86a226c9c1e4ca340fcea5f356982454e4  ./host-plugins/dsh-role-route-panel/src/plugin.js
 f8ff03cc1aa3a5b23a7a6aa03b996d044f14872a430512512a4da7945949361f  ./plugins/route-binding.mjs
 eb2e24319d9f37aa428dd326bd6659276373641a400d6841537ddaa7bab7d6a9  ./preset.yml
 b7c20a9147e4c2d16a757d262059d69537efc21a5e76b8c070a9066592d5e117  ./scripts/bootstrap-catalog.sh
@@ -37,4 +37,4 @@ dd0b004867efebd2d5f548e542f96400f3d0df8a9acca21bac9905b338f1ae65  ./skills/proje
 e9dc03b70e7086c61630fea3e92fe5cb7c24c6808ed7b6a0b2b5727fb882cc44  ./skills/role-compliance-reviewer/SKILL.md
 75d492c3d0d1563768d170ba452244a088fb152e95d35db4f96a8a6a6d7fcf1b  ./tests/r2-route-binding.test.mjs
 a73ba1be9a8ded83c3b23807a7e673739dfc6918055cb04c9a272871e9b4c4c2  ./tests/role-route-panel-client.test.mjs
-442119bc09d03acfb069d795588ee78034192414674eab1750efed927a3eb406  ./tests/role-route-panel.test.mjs
+38aaa30896bbae81ca04a264c6273802a1ecdea3167981b17563ca816ea3dcd3  ./tests/role-route-panel.test.mjs
